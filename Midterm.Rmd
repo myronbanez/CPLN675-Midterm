@@ -1,0 +1,610 @@
+---
+title: "Midterm"
+output: html_document
+---
+
+# Set Up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(caret)
+library(pscl)
+library(plotROC)
+library(pROC)
+library(sf)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(tigris)
+library(viridis)
+library(gridExtra)
+library(dplyr)
+library(raster)
+library(spdep)
+library(FNN)
+library(grid)
+library(mapview)
+library(tidycensus)
+library(ggplot2)
+
+mapTheme <- theme(plot.title =element_text(size=12),
+                  plot.subtitle = element_text(size=8),
+                  plot.caption = element_text(size = 6),
+                  axis.line=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.text.y=element_blank(),
+                  axis.ticks=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.title.y=element_blank(),
+                  panel.background=element_blank(),
+                  panel.border=element_blank(),
+                  panel.grid.major=element_line(colour = 'transparent'),
+                  panel.grid.minor=element_blank(),
+                  legend.direction = "vertical", 
+                  legend.position = "right",
+                  plot.margin = margin(1, 1, 1, 1, 'cm'),
+                  legend.key.height = unit(1, "cm"), legend.key.width = unit(0.2, "cm"))
+
+plotTheme <- theme(
+  plot.title =element_text(size=12),
+  plot.subtitle = element_text(size=8),
+  plot.caption = element_text(size = 6),
+  axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  # Set the entire chart region to blank
+  panel.background=element_blank(),
+  plot.background=element_blank(),
+  #panel.border=element_rect(colour="#F0F0F0"),
+  # Format the grid
+  panel.grid.major=element_line(colour="#D0D0D0",size=.75),
+  axis.ticks=element_blank())
+
+palette2 <- c("#981FAC","#FF006A")
+```
+
+## Loading and Cleaning Data
+### Calgary Data
+```{r calgary initial data}
+calgaryboundary <- st_read("FE_calgshp/calg_boundary.shp") %>% st_transform(crs = 3400)  #city boundary 
+cal_streams <- st_read("FE_calgshp/calg_streams.shp") %>% st_transform(crs = 3400) #streams
+cal_avgel <- st_read("FE_calgshp/calg_fishnet_avgel.shp") %>% st_transform(crs = 3400) #avg elevation
+cal_fac <- st_read("FE_calgshp/calg_fishnet_fac.shp") %>% st_transform(crs = 3400) #flow accumulation
+cal_impervious <- st_read("FE_calgshp/calg_fishnet_imperv.shp") %>% st_transform(crs = 3400)
+cal_inundation <- st_read("FE_calgshp/calg_fishnet_inun.shp") %>% st_transform(crs = 3400)#inundation
+cal_slope <- st_read("FE_calgshp/calg_fishnet_slope.shp") %>% st_transform(crs = 3400) #slope in degrees
+cal_strdist <- st_read("FE_calgshp/calg_fishnet_strdist.shp") %>% st_transform(crs = 3400) #distance from stream
+```
+
+```{r calgary cleaned data}
+#creating dataframe
+AREA <- c("")
+MAJORITY <- c("")
+avgel <- c("") #average elevation
+facMean <- c("") #mean column of cal_fac
+impervSum <- c("") #sum column of cal_impervious
+slopeMean <- c("") #max column of cal_slope
+strDist <- c("") #zsclagst_4 of cal_strdist
+geometry <- c("")
+calgary <- data.frame (AREA, MAJORITY, avgel, facMean, impervSum, slopeMean, strDist, geometry)
+
+geometry <- cal_inundation$geometry
+
+#create new inundation without geometry to populate some variables
+cal_inundation1 <- cal_inundation %>% st_drop_geometry() 
+AREA <- cal_inundation1[, c("zscalgin_3")]
+MAJORITY <- cal_inundation1[, c("zscalgin_4")]
+
+#create new feature engineered datasets without geometry to populate some variables
+cal_avgel1 <- cal_avgel %>% st_drop_geometry()
+avgel <- cal_avgel1[, c("zscalgav_4")] #mean
+
+cal_fac1 <- cal_fac %>% st_drop_geometry()
+facMean <- cal_fac1[, c("zscalgfa_3")] #mean
+
+cal_impervious1 <- cal_impervious %>% st_drop_geometry()
+impervSum <- cal_impervious1[, c("zscalgim_4")] #sum
+
+cal_slope1 <- cal_slope %>% st_drop_geometry()
+slopeMean <- cal_slope1[, c("zscalgsl_4")] #mean
+
+cal_strdist1 <- cal_strdist %>% st_drop_geometry()
+strDist <- cal_strdist1[, c("zscalgst_4")] #mean
+
+calgary <- data.frame (AREA, MAJORITY, avgel, facMean, impervSum, slopeMean, strDist, geometry) %>% st_as_sf() %>% st_transform(crs = 3400)
+```
+
+### Portland-Vancouver Data
+```{r portland initial data}
+plvcboundary <- st_read("FE_plvcshp/PLVC_bounds.shp") %>% st_transform(crs = 8756)  #city boundary 
+plvc_fishnet <- st_read("FE_plvcshp/plvc_fishnet_clear.shp") %>% st_transform(crs = 8756) #streams
+plvc_streams <- st_read("FE_plvcshp/PLVC_streams.shp") %>% st_transform(crs = 8756) #streams
+plvc_avgel <- st_read("FE_plvcshp/PLVC_fishnet_avgel.shp") %>% st_transform(crs = 8756) #avg elevation
+plvc_fac <- st_read("FE_plvcshp/plvc_fishnet_fac.shp") %>% st_transform(crs = 8756) #flow accumulation
+plvc_impervious <- st_read("FE_plvcshp/plvc_fishnet_imperv.shp") %>% st_transform(crs = 8756)
+plvc_slope <- st_read("FE_plvcshp/plvc_fishnet_slope.shp") %>% st_transform(crs = 8756) #slope in degrees
+plvc_strdist <- st_read("FE_plvcshp/plvc_fishnet_strdist.shp") %>% st_transform(crs = 8756) #distance from stream
+```
+
+```{r portland cleaned data}
+#creating dataframe
+p_AREA <- c("")
+p_avgel <- c("") #average elevation
+p_facMean <- c("") #mean column of cal_fac
+p_impervSum <- c("") #sum column of cal_impervious
+p_slopeMean <- c("") #max column of cal_slope
+p_strDist <- c("") #zsclagst_4 of cal_strdist
+p_geometry <- c("")
+plvc <- data.frame (p_AREA, p_avgel, p_facMean, p_impervSum, p_slopeMean, p_strDist, p_geometry)
+
+p_geometry <- plvc_fishnet$geometry
+
+#create new inundation without geometry to populate some variables
+p_fishnet1 <- plvc_fishnet %>% st_drop_geometry() 
+p_AREA <- p_fishnet1[, c("Area")]
+
+#create new feature engineered datasets without geometry to populate some variables
+plvc_avgel1 <- plvc_avgel %>% st_drop_geometry()
+p_avgel <- plvc_avgel1[, c("zsplvcav_4")] #mean
+
+plvc_fac1 <- plvc_fac %>% st_drop_geometry()
+p_facMean <- plvc_fac1[, c("zsplvcfa_3")] #mean
+
+plvc_impervious1 <- plvc_impervious %>% st_drop_geometry()
+p_impervSum <- plvc_impervious1[, c("zsplvcim_4")] #sum
+
+plvc_slope1 <- plvc_slope %>% st_drop_geometry()
+p_slopeMean <- plvc_slope1[, c("zsplvcsl_4")] #mean
+
+plvc_strdist1 <- plvc_strdist %>% st_drop_geometry()
+p_strDist <- plvc_strdist1[, c("zsplvcst_4")] #mean
+
+plvc <- data.frame (p_AREA, p_avgel, p_facMean, p_impervSum, p_slopeMean, p_strDist, p_geometry) %>% st_as_sf() %>% st_transform(crs = 8756)
+
+plvc <- plvc %>%
+  rename(AREA = p_AREA)
+plvc <- plvc %>%
+  rename(avgel = p_avgel)
+plvc <- plvc %>%
+  rename(facMean = p_facMean)
+plvc <- plvc %>%
+  rename(impervSum = p_impervSum)
+plvc <- plvc %>%
+  rename(slopeMean = p_slopeMean)
+plvc <- plvc %>%
+  rename(strDist = p_strDist)
+```
+
+### Feature Engineering
+```{r}
+calgary <- calgary %>%
+  mutate(elevation = case_when(
+    avgel <= 1077.99999 ~ "low",
+    avgel >= 1078 & avgel <= 1189.99999 ~ "average",
+    TRUE ~ "high"))
+
+calgary <- calgary %>%
+  mutate(flow = case_when(
+    facMean <= 33016.99999 ~ "low",
+    facMean >= 33017 & facMean <=66030.99999 ~ "average",
+    TRUE ~ "high"))
+
+calgary <- calgary %>%
+  mutate(distance = case_when(
+    strDist <= 1356.99999 ~ "nearest",
+    strDist >= 1357 & strDist <=2673.99999 ~ "near",
+    strDist >= 2674 & strDist <=3990.99999 ~ "average",
+    strDist >= 3991 & strDist <=5307.99999 ~ "far",
+    TRUE ~ "furthest"))
+
+calgary <- calgary %>%
+  mutate(slope = case_when(
+    slopeMean < 3 ~ "flat",
+    TRUE ~ "steep"))
+
+calgary <- calgary %>%
+  mutate(pervious = case_when(
+    impervSum <= 5 ~ "yes",
+    TRUE ~ "no"))
+
+plvc <- plvc %>%
+  mutate(elevation = case_when(
+    avgel <= 117.99999 ~ "low",
+    avgel >= 118 & avgel <= 226.99999 ~ "average",
+    avgel >=227 ~ "high"))
+
+plvc <- plvc %>%
+  mutate(flow = case_when(
+    facMean <= 24519.99999 ~ "low",
+    facMean >= 24520 & facMean <=49031.999 ~ "average",
+    TRUE ~ "high"))
+
+plvc <- plvc %>%
+  mutate(distance = case_when(
+    strDist <= 774.99999 ~ "nearest",
+    strDist >= 775 & strDist <=1517.99999 ~ "near",
+    strDist >= 1518 & strDist <=2260.99999 ~ "average",
+    strDist >= 2261 & strDist <=3003.99999 ~ "far",
+    TRUE ~ "furthest"))
+
+plvc <- plvc %>%
+  mutate(slope = case_when(
+    slopeMean < 3 ~ "flat",
+    TRUE ~ "steep"))
+
+plvc <- plvc %>%
+  mutate(pervious = case_when(
+    impervSum <= 5 ~ "yes",
+    TRUE ~ "no"))
+```
+
+# Data Visualization
+## Maps
+```{r calgary ggplot, fig.width=5, fig.height=5}
+ggplot() + 
+  geom_sf(data=calgary, fill = "dark blue", color = "dark blue") +
+  geom_sf(data = calgary, aes(fill=as.factor(MAJORITY)), color = "light blue")+
+  scale_fill_manual(values = c("white", "light blue"),
+                    labels = c("No Flooding","Flooding"),
+                    name = "") +
+  labs(title="Observed Flooding in Calgary (Fishnet)") +
+  mapTheme
+
+grid.arrange(ncol = 3,
+ggplot() +
+  geom_sf(data = calgary) +
+  geom_sf(data = cal_avgel,
+          aes(fill=zscalgav_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans="reverse",
+                     name = "Mean") +
+  labs(title = "Average \n Elevation  ") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = calgary) +
+  geom_sf(data = cal_fac,
+          aes(fill=zscalgfa_3), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Flow \n Accumulation") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = calgary) +
+  geom_sf(data = cal_slope,
+          aes(fill=zscalgsl_4), 
+          colour=NA,) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Slope Degrees") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = calgary) +
+  geom_sf(data = cal_strdist,
+          aes(fill=zscalgst_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Distance From \n Stream") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = calgary) +
+  geom_sf(data = cal_impervious,
+          aes(fill=zscalgim_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Sum") +
+  labs(title = "Impervious \n Surface") +
+  mapTheme)
+
+```
+
+```{r plvc ggplot, fig.width=5, fig.height=5}
+grid.arrange(ncol = 3,
+ggplot() +
+  geom_sf(data = plvc) +
+  geom_sf(data = plvc_avgel,
+          aes(fill=zsplvcav_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans="reverse",
+                     name = "Mean") +
+  labs(title = "Average \n Elevation") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = plvc) +
+  geom_sf(data = plvc_fac,
+          aes(fill=zsplvcfa_3), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Flow \n Accumulation") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = plvc) +
+  geom_sf(data = plvc_slope,
+          aes(fill=zsplvcsl_4), 
+          colour=NA,) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Slope Degrees") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = plvc) +
+  geom_sf(data = plvc_strdist,
+          aes(fill=zsplvcst_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Distance \n From Stream") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = plvc) +
+  geom_sf(data = plvc_impervious,
+          aes(fill=zsplvcim_4), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans = "reverse",
+                     name = "Mean") +
+  labs(title = "Impervious \n Surface") +
+  mapTheme)
+
+```
+
+## Plots (fix later) #fix FE
+```{r exploratory analysis}
+calgaryPlotVariables <- 
+  calgary %>%
+  as.data.frame() %>%
+  dplyr::select(MAJORITY,facMean,avgel,slopeMean,strDist,impervSum) %>%
+  gather(variable, value, -MAJORITY)
+
+ggplot(calgaryPlotVariables %>%
+         group_by(MAJORITY, variable) %>%
+         summarize(mean = mean(value))) + 
+     geom_bar(aes(as.factor(MAJORITY), 
+                  mean, 
+                  fill=as.factor(MAJORITY)),
+              stat="identity") + 
+     facet_wrap(~variable, ncol = 5, scales = "free") +
+    labs(title = "Exploratory Analysis of Features", 
+          caption="Without Feature Engineer") +
+     scale_fill_manual(values = c("light blue", "dark blue"),
+                      labels = c("Not Flooded","Flooded"),
+                      name = "") +
+    labs(x="Preserved", y="Value")
+
+
+```
+
+# Model building
+To begin testing on the probability of flooding in Calgary, we partition the dataset into a 70/30 split to train and test on. 
+```{r}
+set.seed(3456)
+trainIndex <- createDataPartition(calgary$MAJORITY, p = .70,
+                                  list = FALSE,
+                                  times = 1)
+calgaryTrain <- calgary[ trainIndex,]
+calgaryTest  <- calgary[-trainIndex,]
+```
+
+## Model binomial
+This model incorporates many feature engineered variables such as how far is the distance from streams, the mean slope degrees, mean flow accumulation, whether a surface is an impervious or not, and elevation levels.
+```{r}
+options(scipen=999)
+calgaryModel <- glm(MAJORITY ~ distance + slope + flow + pervious + elevation,
+                    family="binomial"(link="logit"), data = calgaryTrain %>%
+                      as.data.frame %>%
+                      dplyr::select(-AREA, -geometry, -strDist, -facMean, -slopeMean, -impervSum, -avgel))
+
+summary(calgaryModel)
+```
+The model found that the nearest and far values of distance from streams to be statistically significant. This is also true for the mean flow accumulation at both high and low levels. Pervious surfaces and low elevation were also found to be statistically significant. 
+
+## Model Validation
+The following histogram and plot indicates that the model may be overfit. While this can conclude a high level of accuracy, this comes at the expense of generalizability. The historgram of probabilities or predictions shows the variety in values that will be projected. 
+
+HELP??? A negative or 0 value means that an area did not flood, while a positive or 1 value means that an area did flood. Strong models will have a peak closer to 0 for the negatives (no flooding), and a peak closer to 1 for the positives (flooding).
+```{r histogram and testProbs}
+classProbs <- predict(calgaryModel, calgaryTest, type="response")
+
+hist(classProbs)
+
+testProbs <- data.frame(obs = as.numeric(calgaryTest$MAJORITY),
+                        pred = classProbs)
+
+ggplot(testProbs, aes(x = pred, fill=as.factor(obs))) + 
+  geom_density() +
+  facet_grid(obs ~ .) + 
+  xlab("Probability") + 
+  geom_vline(xintercept = .5) +
+  scale_fill_manual(values = c("light blue", "dark blue"),
+                      labels = c("Not Flooded","Flooded"),
+                      name = "")+
+  plotTheme
+```
+
+### Confusion Matrix
+Based off of the distribution above we change the threshold to 10 or 0.1 moving forward
+```{r}
+testProbs$predClass  = ifelse(testProbs$pred > .1 ,1,0)
+
+caret::confusionMatrix(reference = as.factor(testProbs$obs), 
+                       data = as.factor(testProbs$predClass), 
+                       positive = "1")
+```
+
+### ROC Curve
+AUC determines if a model is sufficient enough to run. 
+```{r}
+ggplot(testProbs, aes(d = obs, m = pred)) + 
+  geom_roc(n.cuts = 50, labels = FALSE, color = 'blue') + 
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey') 
+
+auc(testProbs$obs, testProbs$pred)
+
+```
+
+### Cross Validation
+```{r}
+ctrl <- trainControl(method = "cv", 
+                     number = 100, 
+                     savePredictions = TRUE)
+
+cvFit <- train(as.factor(MAJORITY) ~ .,  data = calgary %>% 
+                                                as.data.frame() %>%
+                                                dplyr::select(-AREA, -geometry, -strDist, -facMean, -slopeMean, -impervSum, -avgel), 
+               method="glm", family="binomial",
+               trControl = ctrl)
+
+cvFit
+```
+
+```{r}
+ggplot(as.data.frame(cvFit$resample), aes(Accuracy)) + 
+  geom_histogram() +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(x="Accuracy",
+       y="Count")+
+  plotTheme
+```
+
+# Predictions
+```{r calgary predictions}
+allPredictions <- 
+  predict(cvFit, calgary, type="prob")[,2]
+  
+calgary <- 
+  cbind(calgary,allPredictions) %>%
+  mutate(allPredictions = round(allPredictions * 100))
+
+calgary1 <- calgary %>%
+  mutate(PredClass = ifelse(allPredictions > 10, 1, 0))
+
+calgary1 <- calgary1 %>%
+  mutate(Correct = ifelse(PredClass == MAJORITY, "1", "0"),
+         Incorrect = ifelse(PredClass != MAJORITY, "1", "0"))
+
+```
+
+```{r plvc prediction}
+plvc_allPredictions <- 
+  predict(cvFit, plvc, type="prob")[,2] 
+
+plvc <- 
+  cbind(plvc,plvc_allPredictions) %>% 
+  mutate(plvc_allPredictions = round(plvc_allPredictions * 100))
+```
+
+### Spatial Cross Validation
+```{r}
+cal_nhood <- st_read("nhood/geo_export_657fd344-2823-4047-abad-f7d6906b7c1a.shp") %>% st_transform(crs = 3400)
+cal_nhood <- st_intersection(calgary1, cal_nhood)
+cal_nhood <- cal_nhood %>% mutate(Correct = as.numeric(Correct),
+                                  Incorrect = as.numeric(Incorrect))
+cal_nhood <- cal_nhood %>% dplyr::select(name, sector, MAJORITY, allPredictions, PredClass, Correct, Incorrect, -geometry) %>% 
+  group_by(name) %>% 
+  summarise(meanPrediction = mean(allPredictions),
+            accuracy = sum(Correct) / sum(Correct) + sum(Incorrect))
+
+ggplot() +
+  geom_sf(data = cal_nhood,
+          aes(fill=accuracy), 
+          colour=NA) +
+  geom_sf(data=calgary  %>% 
+               filter(MAJORITY == 1), 
+               fill="gold",colour="NA") +
+  scale_fill_viridis(option="mako", trans="reverse") +
+  labs(title = "Average Probability of Flooding by Sector with Observed Flooding in Gold") +
+  mapTheme
+
+ggplot() +
+  geom_sf(data = cal_nhood)+
+  geom_sf(data = cal_nhood,
+          aes(fill=accuracy), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans="reverse") +
+  labs(title = "Accuracy of Flooding (Average by Neighborhood)") +
+  mapTheme
+
+ggplot() +
+  geom_sf(data = cal_nhood)+
+  geom_sf(data = cal_nhood,
+          aes(fill=meanPrediction), 
+          colour=NA) +
+  scale_fill_viridis(option="mako", trans="reverse") +
+  labs(title = "Average Probability of Flooding by Sector") +
+  mapTheme
+```
+
+## Maps
+Calgary and PLVC Prediction Maps
+```{r}
+ggplot() + 
+    geom_sf(data=calgary, aes(fill=factor(ntile(allPredictions,5))), 
+            colour=NA) +
+    scale_fill_manual(values = c("#DEF5E5FF","#49C1ADFF","#357BA2FF","#3E356BFF","#0B0405FF"),
+                      labels=as.character(quantile(calgary$allPredictions,
+                                                 c(0.1,.2,.4,.6,.8),
+                                                 na.rm=T)),
+                      name="Predicted\nProbabilities(%)\n(Quintile\nBreaks)") +
+  mapTheme +
+   labs(title="Predicted Flooded Areas in Calgary")
+
+ggplot() + 
+  geom_sf(data=plvc, aes(fill=factor(ntile(plvc_allPredictions,5))), 
+          colour=NA) +
+  scale_fill_manual(values = c("#DEF5E5FF","#49C1ADFF","#357BA2FF","#3E356BFF","#0B0405FF"),
+                    labels=as.character(quantile(plvc$plvc_allPredictions,
+                                                 c(0.1,.2,.4,.6,.8),
+                                                 na.rm=T)),
+                    name="Predicted\nProbabilities(%)\n(Quintile\nBreaks)") +
+  mapTheme +
+  labs(title="Predicted Flooded Areas in Portland-Vancouver")
+ 
+
+```
+
+Calgary Predicted vs Observed
+```{r}
+ ggplot() + 
+  geom_sf(data=calgary, aes(fill=factor(ntile(allPredictions,5))), colour=NA) +
+  scale_fill_manual(values = c("#DEF5E5FF","#49C1ADFF","#357BA2FF","#3E356BFF","#0B0405FF"),
+                    labels=as.character(quantile(calgary$allPredictions,
+                                                 c(0.1,.2,.4,.6,.8),
+                                                 na.rm=T)),
+                    name="Predicted\nProbabilities(%)\n(Quintile\nBreaks)") +
+  geom_sf(data=calgary  %>% 
+               filter(MAJORITY == 1), 
+               fill="gold",colour="NA") +
+  mapTheme +
+  labs(title="Observed and Predicted Flooded Areas",
+       subtitle="Calgary; Observed flooded land in gold; Predicted flooded land in gradient ")
+```
+
+Calgary Confusion Metrics
+```{r}
+calgary %>%
+  mutate(confResult=case_when(allPredictions < 50 & MAJORITY==0 ~ "True_Negative",
+                              allPredictions >= 50 & MAJORITY==1 ~ "True_Positive",
+                              allPredictions < 50 & MAJORITY==1 ~ "False_Negative",
+                              allPredictions >= 50 & MAJORITY==0 ~ "False_Positive")) %>%
+  ggplot()+
+  geom_sf(aes(fill = confResult), color = "transparent")+
+  scale_fill_manual(values = c("#DEF5E5FF","#49C1ADFF","#357BA2FF","#3E356BFF"),
+                    name="Outcomes")+
+  labs(title="Confusion Metrics For Calgary") +
+  mapTheme
+```
+
+
+
+
+
